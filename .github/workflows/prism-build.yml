@@ -151,21 +151,40 @@ jobs:
               fh.write("""
           #include <Geode/Geode.hpp>
           #include <Geode/modify/PlayLayer.hpp>
+          #include <algorithm>
+          #include <vector>
           #include "../hacks.hpp"
           using namespace geode::prelude;
+
+          // Offsets verificados en libcocos2dcpp.so de 2.2091 (android64) desensamblando PlayLayer::switchToStartPosObject
+          // y GJBaseGameLayer::getStartPosObjectsForCurrentMode: m_startPosObject = +0x3090, m_startPosObjects = +0x3098.
+          // getStartPosObjectsForCurrentMode() devuelve un array vacio fuera de ciertos modos, por eso se lee la lista directa.
+          static std::vector<StartPosObject*> prismGetStartPositions(GJBaseGameLayer* layer) {
+              std::vector<StartPosObject*> result;
+              auto arr = *reinterpret_cast<CCArray**>(reinterpret_cast<uintptr_t>(layer) + 0x3098);
+              if (!arr) return result;
+              for (unsigned int i = 0; i < arr->count(); i++) {
+                  if (auto obj = typeinfo_cast<StartPosObject*>(arr->objectAtIndex(i))) result.push_back(obj);
+              }
+              std::sort(result.begin(), result.end(), [](StartPosObject* a, StartPosObject* b) {
+                  return a->getPositionX() < b->getPositionX();
+              });
+              return result;
+          }
+
+          static StartPosObject* prismGetCurrentStartPos(GJBaseGameLayer* layer) {
+              return *reinterpret_cast<StartPosObject**>(reinterpret_cast<uintptr_t>(layer) + 0x3090);
+          }
 
           // Start Pos Switcher: flechas dentro del nivel para cambiar entre los StartPos (y "None" = desde el principio)
           class $modify(PrismStartPosPlayLayer, PlayLayer) {
               struct Fields {
-                  int index = -1;
                   CCLabelBMFont* label = nullptr;
               };
 
               void setupHasCompleted() {
                   PlayLayer::setupHasCompleted();
                   if (!Hacks::isHackEnabled("Start Pos Switcher")) return;
-                  auto arr = this->getStartPosObjectsForCurrentMode();
-                  if (!arr || arr->count() == 0) return;
 
                   auto winSize = CCDirector::get()->getWinSize();
                   auto menu = CCMenu::create();
@@ -175,47 +194,71 @@ jobs:
                   auto leftSpr = CCSprite::createWithSpriteFrameName("GJ_arrow_01_001.png");
                   leftSpr->setScale(.55f);
                   auto leftBtn = CCMenuItemSpriteExtra::create(leftSpr, this, menu_selector(PrismStartPosPlayLayer::onPrevStartPos));
-                  leftBtn->setPosition({-55.f, 0.f});
+                  leftBtn->setPosition({-60.f, 0.f});
                   menu->addChild(leftBtn);
 
                   auto rightSpr = CCSprite::createWithSpriteFrameName("GJ_arrow_01_001.png");
                   rightSpr->setScale(.55f);
                   rightSpr->setFlipX(true);
                   auto rightBtn = CCMenuItemSpriteExtra::create(rightSpr, this, menu_selector(PrismStartPosPlayLayer::onNextStartPos));
-                  rightBtn->setPosition({55.f, 0.f});
+                  rightBtn->setPosition({60.f, 0.f});
                   menu->addChild(rightBtn);
 
-                  m_fields->label = CCLabelBMFont::create("StartPos: None", "bigFont.fnt");
+                  m_fields->label = CCLabelBMFont::create("StartPos", "bigFont.fnt");
                   m_fields->label->setScale(.35f);
                   m_fields->label->setOpacity(180);
                   menu->addChild(m_fields->label);
 
                   this->addChild(menu, 100);
+                  this->updateStartPosLabel();
+              }
+
+              void updateStartPosLabel() {
+                  if (!m_fields->label) return;
+                  auto list = prismGetStartPositions(this);
+                  auto cur = prismGetCurrentStartPos(this);
+                  int idx = -1;
+                  for (size_t i = 0; i < list.size(); i++) if (list[i] == cur) idx = static_cast<int>(i);
+                  m_fields->label->setString(
+                      idx >= 0 ? fmt::format("StartPos: {}/{}", idx + 1, list.size()).c_str()
+                               : fmt::format("StartPos: None ({})", list.size()).c_str());
               }
 
               void onPrevStartPos(CCObject*) { this->switchStartPos(-1); }
               void onNextStartPos(CCObject*) { this->switchStartPos(1); }
 
               void switchStartPos(int dir) {
-                  auto arr = this->getStartPosObjectsForCurrentMode();
-                  if (!arr) return;
-                  int n = static_cast<int>(arr->count());
+                  auto list = prismGetStartPositions(this);
+                  int n = static_cast<int>(list.size());
                   if (n == 0) return;
-                  int idx = m_fields->index + dir;
+                  auto cur = prismGetCurrentStartPos(this);
+                  int idx = -1;
+                  for (int i = 0; i < n; i++) if (list[i] == cur) idx = i;
+                  idx += dir;
                   if (idx < -1) idx = n - 1;
                   if (idx >= n) idx = -1;
-                  m_fields->index = idx;
-                  StartPosObject* obj = (idx >= 0) ? static_cast<StartPosObject*>(arr->objectAtIndex(idx)) : nullptr;
-                  this->switchToStartPosObject(obj);
-                  if (m_fields->label) {
-                      m_fields->label->setString(idx >= 0 ? fmt::format("StartPos: {}/{}", idx + 1, n).c_str() : "StartPos: None");
-                  }
+                  this->switchToStartPosObject(idx >= 0 ? list[idx] : nullptr);
+                  this->updateStartPosLabel();
               }
           };
           """)
           sub("resources/hacks/creator.json", [
               ('"name": "Copy Hack",',
                '"name": "Start Pos Switcher",\n\t    "desc": "Shows arrows in the level to switch between StartPos objects (or None to start from the beginning).",\n        "type": "bool"\n\t},\n    {\n\t    "name": "Copy Hack",')])
+          # No Ghost Trail: oculta el efecto fantasma del jugador
+          with open(f"{root}/src/Hacks/Player.cpp", "a", encoding="utf-8") as fh:
+              fh.write("""
+          #include <Geode/modify/GhostTrailEffect.hpp>
+          class $modify(PrismNoGhostTrail, GhostTrailEffect) {
+              void trailSnapshot(float dt) {
+                  if (Hacks::isHackEnabled("No Ghost Trail")) return;
+                  GhostTrailEffect::trailSnapshot(dt);
+              }
+          };
+          """)
+          sub("resources/hacks/player.json", [
+              ('"name": "No Trail",',
+               '"name": "No Ghost Trail",\n        "desc": "Hides the ghost trail of the player.",\n        "type": "bool"\n    },\n    {\n        "name": "No Trail",')])
           # file::pick devuelve Result<optional<asp Path>>
           sub("src/UI/PrismUI.cpp", [("[](Result<std::optional<std::filesystem::path>> result) {", "[](auto result) {"),
                                      ("auto path = opt.value();", "std::filesystem::path path = opt.value().string();")])
