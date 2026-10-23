@@ -1,0 +1,199 @@
+name: Build Prism Menu 2.2091 (Android64)
+
+# Compila Prism Menu para Android64 y GD 2.2091. Mismo esquema que globed-build.yml:
+# SDK v6 + bindings fijadas, loader compilado para enlazar.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mod_repo:
+        description: 'Repo del mod (owner/repo)'
+        default: 'FireMario211/Prism-Menu'
+      mod_ref:
+        description: 'Rama, tag o commit (vacio = rama por defecto)'
+        default: ''
+  push:
+    branches:
+      - "**"
+
+env:
+  GD_VERSION: "2.2091"
+  GD_COMP_VERSION: "22091"
+  GEODE_REF: "v6"
+  BINDINGS_REF: "d73aadd"
+  CPM_SOURCE_CACHE: ${{ github.workspace }}/cpm-cache
+
+jobs:
+  build:
+    name: Android64
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout de Prism Menu
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.mod_repo || 'FireMario211/Prism-Menu' }}
+          ref: ${{ inputs.mod_ref || '' }}
+          path: mod_src
+
+      - name: Apuntar mod.json a GD 2.2091
+        shell: bash
+        run: |
+          cd mod_src
+          python3 - <<'PY'
+          import os, re
+          v = os.environ["GD_VERSION"]
+          s = open("mod.json", encoding="utf-8").read()
+          n = re.sub(r'("android(?:32|64)?"\s*:\s*)"[^"]*"', r'\1"%s"' % v, s)
+          open("mod.json", "w", encoding="utf-8").write(n)
+          print(re.search(r'"gd"\s*:\s*\{[^}]*\}', n).group(0))
+          PY
+
+      - name: Parchear fuentes (genericos)
+        shell: bash
+        run: |
+          python3 - mod_src <<'PY'
+          import sys, glob, os
+          root = sys.argv[1]
+          n = 0
+          for ext in ("cpp", "hpp", "h", "mm"):
+              for f in glob.glob(f"{root}/**/*.{ext}", recursive=True):
+                  if "/build/" in f or "/cpm-cache/" in f:
+                      continue
+                  try:
+                      t = open(f, encoding="utf-8").read()
+                  except Exception:
+                      continue
+                  if "gd::string" in t:
+                      open(f, "w", encoding="utf-8").write(t.replace("gd::string", "std::string")); n += 1
+          print("archivos con gd::string ->", n)
+          PY
+
+      - name: Install Ninja
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Setup Geode CLI
+        uses: geode-sdk/cli/.github/actions/setup@main
+
+      - name: Geode CLI profile
+        run: |
+          CLI_PROFILE="$GITHUB_WORKSPACE/cli-profile"
+          mkdir -p "$CLI_PROFILE/geode/mods"
+          geode profile add --name GithubActions "$CLI_PROFILE/GeometryDash.exe" win
+
+      - name: Clone Geode SDK (${{ env.GEODE_REF }})
+        run: |
+          git clone --depth 1 --branch "$GEODE_REF" --recurse-submodules --shallow-submodules \
+            https://github.com/geode-sdk/geode "$GITHUB_WORKSPACE/geode-sdk-clone"
+          echo "GEODE_SDK=$GITHUB_WORKSPACE/geode-sdk-clone" >> "$GITHUB_ENV"
+          git -C geode-sdk-clone log -1 --format='Geode %h %ad %s' --date=short
+          grep -n "android:" geode-sdk-clone/CMakeLists.txt | head -2
+
+      # Las bindings de geode-sdk/bindings (main) estan en obras para 2.209x y a veces quedan rotas entre commits
+      # (el 21-oct el commit 7229495 quito miembros de EditorPauseLayer y dejo su inline sin actualizar).
+      # Se fija un commit conocido que compila y se usa en el loader y en el mod.
+      - name: Clonar bindings (commit fijo)
+        shell: bash
+        run: |
+          git clone --filter=blob:none https://github.com/geode-sdk/bindings "$GITHUB_WORKSPACE/bindings-clone"
+          git -C "$GITHUB_WORKSPACE/bindings-clone" checkout "$BINDINGS_REF"
+          git -C "$GITHUB_WORKSPACE/bindings-clone" log -1 --format='bindings %h %ad %s' --date=short
+          echo "GEODE_BINDINGS_REPO_PATH=$GITHUB_WORKSPACE/bindings-clone" >> "$GITHUB_ENV"
+
+      # El mod se enlaza contra Geode.android64.so: se compila el loader de la misma rama.
+      # (Directorio de build distinto de "build": el CMake del mod usa $GEODE_SDK/build para el SDK.)
+      - name: Build Geode loader (link target)
+        shell: bash
+        run: |
+          set -o pipefail
+          NDK=/usr/local/lib/android/sdk/ndk/29.0.14206865
+          [ -d "$NDK" ] || NDK="$ANDROID_NDK_LATEST_HOME"
+          cd "$GEODE_SDK"
+          cmake -B loader-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DGEODE_CODEGEN_CMAKE_ARGS="-DCMAKE_C_COMPILER=clang;-DCMAKE_CXX_COMPILER=clang++;-G Ninja" \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
+            -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+            -DANDROID_PLATFORM=android-23 -DANDROID_STL=c++_shared -DANDROID_ABI=arm64-v8a \
+            -DGEODE_BINDINGS_REPO_PATH="$GEODE_BINDINGS_REPO_PATH" \
+            -DGEODE_GD_VERSION="$GD_VERSION" -DGEODE_COMP_GD_VERSION="$GD_COMP_VERSION" 2>&1 | tee "$GITHUB_WORKSPACE/loader.log"
+          cmake --build loader-build --parallel -- -k 0 2>&1 | tee -a "$GITHUB_WORKSPACE/loader.log"
+          ls -la bin/nightly/Geode.android64.so
+
+      - name: Errores del loader (resumen)
+        if: ${{ failure() }}
+        shell: bash
+        run: |
+          {
+            echo "## Errores al compilar el loader"
+            echo '```'
+            grep -n -B1 -A12 -E 'FAILED:|error:|CMake Error|undefined reference|ld: error|fatal error' loader.log | head -150
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Diagnostico de asp2 (CPM)
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          echo "SDK: $(git -C geode-sdk-clone log -1 --format='%h %ad %s' --date=short)"
+          grep -n 'GEODE_ASP_VERSION "' geode-sdk-clone/CMakeLists.txt || true
+          ls cpm-cache/asp2 || true
+          ls cpm-cache/asp2/*/include/asp/fs/Path.hpp || echo "FALTA asp/fs/Path.hpp en asp2"
+
+      - name: Ajustar la version de Geode en mod.json a la del SDK
+        shell: bash
+        run: |
+          V=$(tr -d '[:space:]' < "$GEODE_SDK/VERSION")
+          echo "Version del SDK: $V"
+          sed -i -E "s/(\"geode\"[[:space:]]*:[[:space:]]*)\"[^\"]*\"/\1\"$V\"/" mod_src/mod.json
+          grep -n '"geode"' mod_src/mod.json
+
+      - name: Build mod
+        shell: bash
+        run: |
+          NDK=/usr/local/lib/android/sdk/ndk/29.0.14206865
+          [ -d "$NDK" ] || NDK="$ANDROID_NDK_LATEST_HOME"
+          cd mod_src
+          set +e
+          {
+            cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+              -DGEODE_CODEGEN_CMAKE_ARGS="-DCMAKE_C_COMPILER=clang;-DCMAKE_CXX_COMPILER=clang++;-G Ninja" \
+              -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
+              -DANDROID_STL=c++_shared -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-23 \
+              -DGEODE_DONT_INSTALL_MODS=ON -DGEODE_TARGET_PLATFORM=Android64 \
+              -DGEODE_GD_VERSION="$GD_VERSION" -DGEODE_COMP_GD_VERSION="$GD_COMP_VERSION" \
+              -DGEODE_BINDINGS_REPO_PATH="$GEODE_BINDINGS_REPO_PATH" \
+            && cmake --build build --config Release --parallel -- -k 0
+          } 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+          code=${PIPESTATUS[0]}
+          if [ "$code" -ne 0 ]; then
+            {
+              echo "## Error compilando Prism Menu"
+              echo '```'
+              grep -E '^/.*(error|fatal error):|CMake Error|undefined reference|ld: error' "$GITHUB_WORKSPACE/build.log" | sed 's|/home/runner/work/[^/]*/[^/]*/||' | sort -u | cut -c1-260 | head -250
+              echo '```'
+            } | tee -a "$GITHUB_STEP_SUMMARY"
+            exit $code
+          fi
+          mkdir -p "$GITHUB_WORKSPACE/output"
+          find ./build -name "*.geode" -exec cp {} "$GITHUB_WORKSPACE/output/" \;
+          ls -la "$GITHUB_WORKSPACE/output"
+
+      - name: Upload build logs
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: prism-build-logs
+          path: |
+            build.log
+            loader.log
+          if-no-files-found: ignore
+
+      - name: Upload .geode
+        uses: actions/upload-artifact@v4
+        with:
+          name: prism-android64-2.2091
+          path: |
+            output/*.geode
+          if-no-files-found: error
+          
