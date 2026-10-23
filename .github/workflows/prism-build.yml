@@ -114,6 +114,38 @@ jobs:
           sub("resources/hacks/player.json", [
               ('        "name": "Solid Wave Trail",',
                '        "name": "No Wave Trail Behind",\n        "desc": "Hides the white trail the game draws behind the wave (not the colored trail).",\n        "type": "bool",\n        "platforms": ["win","android32","android64"]\n    },\n    {\n        "name": "Solid Wave Trail",')])
+          # Wave: en 2.2091 la wave se dibuja con HardStreak::appendQuad (dos pasadas: ancha translucida "detras" y fina),
+          # no con CCDrawNode::drawPolygon. Se hookea appendQuad para ocultar la ancha y/o cambiar el color.
+          with open(f"{root}/src/Hacks/Player.cpp", "a", encoding="utf-8") as fh:
+              fh.write("""
+          // Wave trail (2.2091): No Wave Trail Behind + Custom Wave Trail Color
+          class $modify(PrismWaveTrail, HardStreak) {
+              void appendQuad(cocos2d::CCPoint const* pts, cocos2d::ccColor4F const& color) {
+                  if (Hacks::isHackEnabled("No Wave Trail Behind")) {
+                      float w = ccpDistance(pts[0], pts[1]);
+                      float base = m_waveSize * m_pulseSize;
+                      // la pasada ancha mide el triple que la fina
+                      if (base > 0.f && w > base * 4.f) return;
+                  }
+                  if (Hacks::isHackEnabled("Custom Wave Trail Color")) {
+                      auto r = Hacks::getHack("Wave Trail Red");
+                      auto g = Hacks::getHack("Wave Trail Green");
+                      auto b = Hacks::getHack("Wave Trail Blue");
+                      if (r && g && b) {
+                          cocos2d::ccColor4F c = color;
+                          c.r = r->value.intValue / 255.f;
+                          c.g = g->value.intValue / 255.f;
+                          c.b = b->value.intValue / 255.f;
+                          return HardStreak::appendQuad(pts, c);
+                      }
+                  }
+                  HardStreak::appendQuad(pts, color);
+              }
+          };
+          """)
+          sub("resources/hacks/player.json", [
+              ('        "name": "Solid Wave Trail",',
+               '        "name": "Custom Wave Trail Color",\n        "desc": "Uses the color set below for the wave trail.",\n        "type": "bool",\n        "platforms": ["win","android32","android64"]\n    },\n    {\n        "name": "Wave Trail Red",\n        "desc": "Red value (0-255) of the custom wave trail color.",\n        "type": "int",\n        "min": 0,\n        "max": 255,\n        "step": 1,\n        "default": 255,\n        "platforms": ["win","android32","android64"]\n    },\n    {\n        "name": "Wave Trail Green",\n        "desc": "Green value (0-255) of the custom wave trail color.",\n        "type": "int",\n        "min": 0,\n        "max": 255,\n        "step": 1,\n        "default": 0,\n        "platforms": ["win","android32","android64"]\n    },\n    {\n        "name": "Wave Trail Blue",\n        "desc": "Blue value (0-255) of the custom wave trail color.",\n        "type": "int",\n        "min": 0,\n        "max": 255,\n        "step": 1,\n        "default": 0,\n        "platforms": ["win","android32","android64"]\n    },\n    {\n        "name": "Solid Wave Trail",')])
           # file::pick devuelve Result<optional<asp Path>>
           sub("src/UI/PrismUI.cpp", [("[](Result<std::optional<std::filesystem::path>> result) {", "[](auto result) {"),
                                      ("auto path = opt.value();", "std::filesystem::path path = opt.value().string();")])
@@ -147,6 +179,9 @@ jobs:
         run: |
           git clone --filter=blob:none https://github.com/geode-sdk/bindings "$GITHUB_WORKSPACE/bindings-clone"
           git -C "$GITHUB_WORKSPACE/bindings-clone" checkout "$BINDINGS_REF"
+          # HardStreak::appendQuad esta como TodoReturn (no se puede hookear); en 2.2091 devuelve void
+          sed -i 's/TodoReturn appendQuad(cocos2d::CCPoint const\*/void appendQuad(cocos2d::CCPoint const*/' "$GITHUB_WORKSPACE/bindings-clone/bindings/2.2091/GeometryDash.bro"
+          grep -n "appendQuad" "$GITHUB_WORKSPACE/bindings-clone/bindings/2.2091/GeometryDash.bro"
           git -C "$GITHUB_WORKSPACE/bindings-clone" log -1 --format='bindings %h %ad %s' --date=short
           echo "GEODE_BINDINGS_REPO_PATH=$GITHUB_WORKSPACE/bindings-clone" >> "$GITHUB_ENV"
 
