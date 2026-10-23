@@ -332,5 +332,4 @@ jobs:
             exit $code
           fi
           mkdir -p "$GITHUB_WORKSPACE/output"
-          find ./build -name "*.geode" -exec cp {} "$GITHUB_WORKSPACE/output/" \;
-      
+          # el paquete .geode lo genera un target aparte (<proyecto>_PACKAGE); si no sal
