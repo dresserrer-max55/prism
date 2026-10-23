@@ -123,12 +123,23 @@ jobs:
           class $modify(PrismWaveTrail, HardStreak) {
               void appendQuad(cocos2d::CCPoint const* pts, cocos2d::ccColor4F const& color) {
                   bool solid = Hacks::isHackEnabled("Solid Wave Trail");
+                  static int prismLogCount = 0;
+                  if (prismLogCount < 6) {
+                      prismLogCount++;
+                      geode::log::info("[Prism] appendQuad #{} color=({:.2f},{:.2f},{:.2f},{:.2f}) w={:.2f} base={:.2f} solid={} behind={}",
+                          prismLogCount, color.r, color.g, color.b, color.a, ccpDistance(pts[0], pts[1]), m_waveSize * m_pulseSize,
+                          solid, Hacks::isHackEnabled("No Wave Trail Behind"));
+                  }
                   if (solid || Hacks::isHackEnabled("No Wave Trail Behind")) {
-                      bool white = color.r >= 0.99f && color.g >= 0.99f && color.b >= 0.99f;
+                      bool white = color.r >= 0.9f && color.g >= 0.9f && color.b >= 0.9f;
                       if (white) {
+                          // la pasada blanca usa ccWHITE fijo; los anchos pueden quedar recortados (mini wave), asi que se oculta por color.
+                          // Solo si el icono es blanco se distingue por ancho (la blanca es la fina, la ancha mide 3x).
+                          auto nc = this->getColor();
+                          bool nodeWhite = nc.r >= 230 && nc.g >= 230 && nc.b >= 230;
+                          if (!nodeWhite) return;
                           float w = ccpDistance(pts[0], pts[1]);
                           float base = m_waveSize * m_pulseSize;
-                          // la pasada blanca es la fina (la ancha mide 3x)
                           if (base <= 0.f || w <= base * 4.f) return;
                       }
                   }
@@ -301,6 +312,23 @@ jobs:
           """ + t[j:]
           open(p, "w", encoding="utf-8").write(t)
           print("parcheado onInfoBtn")
+          # Hitboxes "on death" del juego: el hook de PlayLayer::updateVisibility ocultaba m_debugDrawNode siempre que no estuviera
+          # activo un hack de Prism -> anulaba la opcion vanilla. Ahora solo lo oculta si lo mostro Prism.
+          sub("src/Hacks/Misc.cpp", [
+              ("class $modify(PLMiscHacks, PlayLayer) {\n    void updateVisibility(float p0) {",
+               "class $modify(PLMiscHacks, PlayLayer) {\n    struct Fields {\n        bool prismShown = false;\n    };\n    void updateVisibility(float p0) {"),
+              ("            if (!m_debugDrawNode->isVisible()) m_debugDrawNode->setVisible(true);\n",
+               "            if (!m_debugDrawNode->isVisible()) m_debugDrawNode->setVisible(true);\n            m_fields->prismShown = true;\n"),
+              ("        else if (m_debugDrawNode->isVisible() && !(m_isPracticeMode && m_isDebugDrawEnabled))\n            m_debugDrawNode->setVisible(false);",
+               "        else if (m_fields->prismShown) {\n            m_fields->prismShown = false;\n            if (!(m_isPracticeMode && m_isDebugDrawEnabled) && !(m_player1 && m_player1->m_isDead)) m_debugDrawNode->setVisible(false);\n        }")])
+          # el hook global de CCDrawNode::drawPolygon (Solid Wave Trail antiguo) cambiaba el z-order y la mezcla de TODOS los draw nodes
+          # (incluidos los hitboxes); la wave ya no usa drawPolygon, asi que se elimina
+          import re as _re
+          pp = f"{root}/src/Hacks/Player.cpp"
+          tt = open(pp, encoding="utf-8").read()
+          tt2 = _re.sub(r"class \$modify\(CCDrawNode\) \{.*?\n\};\n", "", tt, count=1, flags=_re.S)
+          print("hook CCDrawNode eliminado:", tt2 != tt)
+          open(pp, "w", encoding="utf-8").write(tt2)
           # file::pick devuelve Result<optional<asp Path>>
           sub("src/UI/PrismUI.cpp", [("[](Result<std::optional<std::filesystem::path>> result) {", "[](auto result) {"),
                                      ("auto path = opt.value();", "std::filesystem::path path = opt.value().string();")])
