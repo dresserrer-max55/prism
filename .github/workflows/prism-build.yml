@@ -118,14 +118,23 @@ jobs:
           # no con CCDrawNode::drawPolygon. Se hookea appendQuad para ocultar la ancha y/o cambiar el color.
           with open(f"{root}/src/Hacks/Player.cpp", "a", encoding="utf-8") as fh:
               fh.write("""
-          // Wave trail (2.2091): No Wave Trail Behind + Custom Wave Trail Color
+          // Wave trail (2.2091): la wave se dibuja en 2 pasadas: ancha con el color del jugador y fina BLANCA (ccWHITE fijo).
+          // No Wave Trail Behind / Solid Wave Trail ocultan la blanca; Solid ademas usa mezcla normal. Custom Wave Trail Color cambia el color.
           class $modify(PrismWaveTrail, HardStreak) {
               void appendQuad(cocos2d::CCPoint const* pts, cocos2d::ccColor4F const& color) {
-                  if (Hacks::isHackEnabled("No Wave Trail Behind")) {
-                      float w = ccpDistance(pts[0], pts[1]);
-                      float base = m_waveSize * m_pulseSize;
-                      // la pasada ancha (3x) es la de color; la fina es la blanca/de fuego de detras: se oculta la fina
-                      if (base > 0.f && w <= base * 4.f) return;
+                  bool solid = Hacks::isHackEnabled("Solid Wave Trail");
+                  if (solid || Hacks::isHackEnabled("No Wave Trail Behind")) {
+                      bool white = color.r >= 0.99f && color.g >= 0.99f && color.b >= 0.99f;
+                      if (white) {
+                          float w = ccpDistance(pts[0], pts[1]);
+                          float base = m_waveSize * m_pulseSize;
+                          // la pasada blanca es la fina (la ancha mide 3x)
+                          if (base <= 0.f || w <= base * 4.f) return;
+                      }
+                  }
+                  if (solid) {
+                      cocos2d::ccBlendFunc blend = { 1, 0x0303 }; // GL_ONE, GL_ONE_MINUS_SRC_ALPHA
+                      this->setBlendFunc(blend);
                   }
                   if (Hacks::isHackEnabled("Custom Wave Trail Color")) {
                       auto r = Hacks::getHack("Wave Trail Red");
@@ -158,7 +167,6 @@ jobs:
 
           // Offsets verificados en libcocos2dcpp.so de 2.2091 (android64) desensamblando PlayLayer::switchToStartPosObject
           // y GJBaseGameLayer::getStartPosObjectsForCurrentMode: m_startPosObject = +0x3090, m_startPosObjects = +0x3098.
-          // getStartPosObjectsForCurrentMode() devuelve un array vacio fuera de ciertos modos, por eso se lee la lista directa.
           static std::vector<StartPosObject*> prismGetStartPositions(GJBaseGameLayer* layer) {
               std::vector<StartPosObject*> result;
               auto arr = *reinterpret_cast<CCArray**>(reinterpret_cast<uintptr_t>(layer) + 0x3098);
@@ -176,52 +184,63 @@ jobs:
               return *reinterpret_cast<StartPosObject**>(reinterpret_cast<uintptr_t>(layer) + 0x3090);
           }
 
-          // Start Pos Switcher: flechas dentro del nivel para cambiar entre los StartPos (y "None" = desde el principio)
+          // Start Pos Switcher: flechas dentro del nivel (solo si el nivel tiene StartPos y el hack esta activado, tambien en pleno nivel)
           class $modify(PrismStartPosPlayLayer, PlayLayer) {
               struct Fields {
+                  CCMenu* menu = nullptr;
                   CCLabelBMFont* label = nullptr;
               };
 
               void setupHasCompleted() {
                   PlayLayer::setupHasCompleted();
-                  if (!Hacks::isHackEnabled("Start Pos Switcher")) return;
 
                   auto winSize = CCDirector::get()->getWinSize();
                   auto menu = CCMenu::create();
                   menu->setPosition({winSize.width / 2.f, 24.f});
                   menu->setID("prism-startpos-switcher");
+                  menu->setVisible(false);
+                  menu->setEnabled(false);
 
                   auto leftSpr = CCSprite::createWithSpriteFrameName("GJ_arrow_01_001.png");
                   leftSpr->setScale(.55f);
                   auto leftBtn = CCMenuItemSpriteExtra::create(leftSpr, this, menu_selector(PrismStartPosPlayLayer::onPrevStartPos));
-                  leftBtn->setPosition({-60.f, 0.f});
+                  leftBtn->setPosition({-45.f, 0.f});
                   menu->addChild(leftBtn);
 
                   auto rightSpr = CCSprite::createWithSpriteFrameName("GJ_arrow_01_001.png");
                   rightSpr->setScale(.55f);
                   rightSpr->setFlipX(true);
                   auto rightBtn = CCMenuItemSpriteExtra::create(rightSpr, this, menu_selector(PrismStartPosPlayLayer::onNextStartPos));
-                  rightBtn->setPosition({60.f, 0.f});
+                  rightBtn->setPosition({45.f, 0.f});
                   menu->addChild(rightBtn);
 
-                  m_fields->label = CCLabelBMFont::create("StartPos", "bigFont.fnt");
-                  m_fields->label->setScale(.35f);
-                  m_fields->label->setOpacity(180);
+                  m_fields->label = CCLabelBMFont::create("0/0", "bigFont.fnt");
+                  m_fields->label->setScale(.45f);
+                  m_fields->label->setOpacity(200);
                   menu->addChild(m_fields->label);
 
+                  m_fields->menu = menu;
                   this->addChild(menu, 100);
-                  this->updateStartPosLabel();
+                  this->schedule(schedule_selector(PrismStartPosPlayLayer::checkStartPosUI), 0.2f);
+                  this->checkStartPosUI(0.f);
               }
 
-              void updateStartPosLabel() {
-                  if (!m_fields->label) return;
+              // muestra u oculta las flechas segun el hack (activable/desactivable en pleno nivel) y si hay StartPos
+              void checkStartPosUI(float) {
+                  if (!m_fields->menu) return;
                   auto list = prismGetStartPositions(this);
+                  bool show = Hacks::isHackEnabled("Start Pos Switcher") && !list.empty();
+                  m_fields->menu->setVisible(show);
+                  m_fields->menu->setEnabled(show);
+                  if (show) this->updateStartPosLabel(list);
+              }
+
+              void updateStartPosLabel(std::vector<StartPosObject*> const& list) {
+                  if (!m_fields->label) return;
                   auto cur = prismGetCurrentStartPos(this);
                   int idx = -1;
                   for (size_t i = 0; i < list.size(); i++) if (list[i] == cur) idx = static_cast<int>(i);
-                  m_fields->label->setString(
-                      idx >= 0 ? fmt::format("StartPos: {}/{}", idx + 1, list.size()).c_str()
-                               : fmt::format("StartPos: None ({})", list.size()).c_str());
+                  m_fields->label->setString(fmt::format("{}/{}", idx + 1, list.size()).c_str());
               }
 
               void onPrevStartPos(CCObject*) { this->switchStartPos(-1); }
@@ -238,7 +257,7 @@ jobs:
                   if (idx < -1) idx = n - 1;
                   if (idx >= n) idx = -1;
                   this->switchToStartPosObject(idx >= 0 ? list[idx] : nullptr);
-                  this->updateStartPosLabel();
+                  this->updateStartPosLabel(list);
               }
           };
           """)
@@ -259,6 +278,29 @@ jobs:
           sub("resources/hacks/player.json", [
               ('"name": "No Trail",',
                '"name": "No Ghost Trail",\n        "desc": "Hides the ghost trail of the player.",\n        "type": "bool"\n    },\n    {\n        "name": "No Trail",')])
+          # Menu Prism: (1) el ScrollLayer de Geode oculta los hijos cuyo rectangulo sale de la vista; m_content era un menu de
+          # tamano pantalla desplazado, y al bajar mucho se ocultaba entero -> se le da un tamano enorme.
+          # (2) el boton "!" crasheaba (punteros sin inicializar / busqueda de nodos por nombre): popup simple y seguro.
+          sub("src/UI/PrismUI.cpp", [("m_content->setZOrder(2);", "m_content->setZOrder(2);\n    m_content->setContentSize({320.F, 3000.F});")])
+          p = f"{root}/src/UI/PrismUI.cpp"
+          t = open(p, encoding="utf-8").read()
+          i = t.index("void PrismUIButton::onInfoBtn(CCObject* ret) {")
+          j = t.index("matjson::Value PrismUI::GetTheme() {")
+          t = t[:i] + """\
+          void PrismUIButton::onInfoBtn(CCObject* ret) {
+              auto node = typeinfo_cast<CCNode*>(ret);
+              if (!node) return;
+              HackItem* hack = static_cast<HackItem*>(node->getUserData());
+              if (!hack) return;
+              auto currentLanguage = Lang::getLanguage();
+              auto name = currentLanguage->name(hack->name);
+              auto desc = currentLanguage->desc(hack->name, hack->desc);
+              FLAlertLayer::create(name.c_str(), desc, "OK")->show();
+          }
+
+          """ + t[j:]
+          open(p, "w", encoding="utf-8").write(t)
+          print("parcheado onInfoBtn")
           # file::pick devuelve Result<optional<asp Path>>
           sub("src/UI/PrismUI.cpp", [("[](Result<std::optional<std::filesystem::path>> result) {", "[](auto result) {"),
                                      ("auto path = opt.value();", "std::filesystem::path path = opt.value().string();")])
