@@ -96,6 +96,24 @@ jobs:
           sub("src/main.cpp", [("auto currentSave = Mod::get()->getSaveDir();", "std::filesystem::path currentSave = Mod::get()->getSaveDir().string();"),
                                ("bool init(GJGameLevel *p0, bool p1, bool p2) {", "bool init(GJGameLevel *p0, bool p1) {"),
                                ("PlayLayer::init(p0,p1,p2)", "PlayLayer::init(p0,p1)")])
+          # Boton en el menu de pausa: no depender del ID "center-button-menu" (Node IDs puede no haberlo puesto) y
+          # opciones para mostrarlo en pausa / dentro del nivel
+          sub("src/main.cpp", [
+              ("if (!Mod::get()->getSettingValue<bool>(\"hide-button\")) {\n            if (auto menu = this->getChildByID(\"center-button-menu\")) {\n                auto button = PrismButton::createButton(this);\n                menu->addChild(button);\n                menu->reorderChild(button, -1);\n                menu->updateLayout();\n            }\n        }",
+               "if (!Mod::get()->getSettingValue<bool>(\"hide-button\") && Mod::get()->getSettingValue<bool>(\"button-in-pause\")) {\n            if (auto menu = this->getChildByID(\"center-button-menu\")) {\n                auto button = PrismButton::createButton(this);\n                menu->addChild(button);\n                menu->reorderChild(button, -1);\n                menu->updateLayout();\n            } else {\n                auto winSize = CCDirector::get()->getWinSize();\n                auto fallbackMenu = CCMenu::create();\n                fallbackMenu->setPosition({winSize.width - 32.f, 32.f});\n                fallbackMenu->addChild(PrismButton::createButton(this));\n                this->addChild(fallbackMenu, 10);\n            }\n        }"),
+              ("if (!PlayLayer::init(p0,p1)) return false;\n        if (prismButton != nullptr && Hacks::isHackEnabled(\"Show Button\")) prismButton->setVisible(false);",
+               "if (!PlayLayer::init(p0,p1)) return false;\n        if (prismButton != nullptr && Hacks::isHackEnabled(\"Show Button\") && !Mod::get()->getSettingValue<bool>(\"button-in-level\")) prismButton->setVisible(false);"),
+          ])
+          sub("mod.json", [
+              ('"hide-button": {',
+               '"button-in-pause": {\n\t\t\t"name": "Button in Pause Menu",\n\t\t\t"description": "Shows the Prism Menu button in the pause menu.",\n\t\t\t"type": "bool",\n\t\t\t"default": true\n\t\t},\n\t\t"button-in-level": {\n\t\t\t"name": "Button in Level",\n\t\t\t"description": "Keeps the floating Prism Menu button visible while playing a level. (Requires Show Button enabled in the menu)",\n\t\t\t"type": "bool",\n\t\t\t"default": false\n\t\t},\n\t\t"hide-button": {')])
+          # Nuevo hack "No Wave Trail Behind": oculta el trail blanco/translucido que el juego dibuja detras de la wave
+          sub("src/Hacks/Player.cpp", [
+              ("if (!Hacks::isHackEnabled(\"Solid Wave Trail\")) return CCDrawNode::drawPolygon(p0,p1,p2,p3,p4);",
+               "if (Hacks::isHackEnabled(\"No Wave Trail Behind\") && p2.r == 1.F && p2.g == 1.F && p2.b == 1.F && p2.a != 1.F) return true;\n        if (!Hacks::isHackEnabled(\"Solid Wave Trail\")) return CCDrawNode::drawPolygon(p0,p1,p2,p3,p4);")])
+          sub("resources/hacks/player.json", [
+              ('        "name": "Solid Wave Trail",',
+               '        "name": "No Wave Trail Behind",\n        "desc": "Hides the white trail the game draws behind the wave (not the colored trail).",\n        "type": "bool",\n        "platforms": ["win","android32","android64"]\n    },\n    {\n        "name": "Solid Wave Trail",')])
           # file::pick devuelve Result<optional<asp Path>>
           sub("src/UI/PrismUI.cpp", [("[](Result<std::optional<std::filesystem::path>> result) {", "[](auto result) {"),
                                      ("auto path = opt.value();", "std::filesystem::path path = opt.value().string();")])
