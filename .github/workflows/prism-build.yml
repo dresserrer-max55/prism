@@ -332,4 +332,45 @@ jobs:
             exit $code
           fi
           mkdir -p "$GITHUB_WORKSPACE/output"
-          # el paquete .geode lo genera un target aparte (<proyecto>_PACKAGE); si no sal
+          # el paquete .geode lo genera un target aparte (<proyecto>_PACKAGE); si no salio, se construye explicitamente
+          if [ -z "$(find . -name '*.geode' -not -path './build/CMakeFiles/*' | head -1)" ]; then
+            echo "No hay .geode todavia; objetivos de paquete disponibles:"
+            ninja -C build -t targets all | grep -i -E "package|\.geode" | head -20
+            cmake --build build --target PrismMenu_PACKAGE 2>&1 | tail -20 || true
+          fi
+          echo "== .geode y .so encontrados =="
+          find . \( -name '*.geode' -o -name '*android64.so' -o -name 'PrismMenu*.so' \) -not -path './build/CMakeFiles/*' | head -20
+          find . -name '*.geode' -not -path './build/CMakeFiles/*' -exec cp {} "$GITHUB_WORKSPACE/output/" \;
+          ls -la "$GITHUB_WORKSPACE/output"
+
+      - name: Upload build logs
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: prism-build-logs
+          path: |
+            build.log
+            loader.log
+          if-no-files-found: ignore
+
+      - name: Resumen de archivos generados
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          {
+            echo "## Archivos generados"
+            echo '```'
+            echo "-- output/ --"; ls -la output 2>&1
+            echo "-- .geode / .so / .zip en mod_src --"
+            find mod_src -type f \( -name '*.geode' -o -name '*.so' -o -name '*.zip' \) -not -path '*/CMakeFiles/*' -not -path '*/cpm-cache/*' -printf '%p  %s bytes\n' 2>&1 | head -30
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload .geode
+        uses: actions/upload-artifact@v4
+        with:
+          name: prism-android64-2.2091
+          path: |
+            output/
+            mod_src/build/*.geode
+          if-no-files-found: error
