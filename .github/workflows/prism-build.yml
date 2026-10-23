@@ -329,6 +329,73 @@ jobs:
           tt2 = _re.sub(r"class \$modify\(CCDrawNode\) \{.*?\n\};\n", "", tt, count=1, flags=_re.S)
           print("hook CCDrawNode eliminado:", tt2 != tt)
           open(pp, "w", encoding="utf-8").write(tt2)
+          # No Wave Trail Behind tambien oculta el trail normal pequeno que la wave sigue usando
+          with open(f"{root}/src/Hacks/Player.cpp", "a", encoding="utf-8") as fh:
+              fh.write("""
+
+          #include <Geode/modify/PlayerObject.hpp>
+          // "No Wave Trail Behind": en 2.2091 la wave activa ademas el trail normal (CCMotionStreak, el pequeno de atras, como el del cubo).
+          // PlayerObject::activateStreak reanuda m_regularTrail (+0x770) siempre y, si es wave (m_isDart, +0x974), tambien el HardStreak (+0x780).
+          // Offsets verificados desensamblando libcocos2dcpp.so de 2.2091 (android64).
+          class $modify(PrismWaveRegularTrail, PlayerObject) {
+              struct Fields {
+                  bool hidden = false;
+              };
+              void update(float dt) {
+                  PlayerObject::update(dt);
+                  auto base = reinterpret_cast<uintptr_t>(this);
+                  auto reg = *reinterpret_cast<cocos2d::CCMotionStreak**>(base + 0x770);
+                  if (!reg) return;
+                  bool isDart = *reinterpret_cast<bool*>(base + 0x974);
+                  bool want = isDart && Hacks::isHackEnabled("No Wave Trail Behind");
+                  if (want) {
+                      if (reg->isVisible()) reg->setVisible(false);
+                      m_fields->hidden = true;
+                  } else if (m_fields->hidden) {
+                      reg->setVisible(true);
+                      m_fields->hidden = false;
+                  }
+              }
+          };
+          """)
+          # Bypass: Unlock Levels (niveles principales sin monedas)
+          with open(f"{root}/src/Hacks/UnlockLevels.cpp", "w", encoding="utf-8") as fh:
+              fh.write("""
+          #include <Geode/Geode.hpp>
+          #include <Geode/modify/LevelPage.hpp>
+          #include <Geode/modify/GameStatsManager.hpp>
+          #include "../hacks.hpp"
+          using namespace geode::prelude;
+
+          // Unlock Levels: los niveles principales se bloquean comparando GameStatsManager::getStat("8") (monedas de usuario)
+          // con las monedas requeridas, tanto en LevelPage::onPlay como en LevelPage::updateDynamicPage (candado).
+          // Solo mientras se ejecutan esas dos funciones se devuelve un valor alto para la stat "8" (no cambia los contadores).
+          static bool g_prismUnlockLevels = false;
+
+          class $modify(PrismUnlockStats, GameStatsManager) {
+              int getStat(char const* key) {
+                  int ret = GameStatsManager::getStat(key);
+                  if (g_prismUnlockLevels && key && key[0] == '8' && !key[1]) return 999999;
+                  return ret;
+              }
+          };
+
+          class $modify(PrismUnlockLevelPage, LevelPage) {
+              void onPlay(CCObject* sender) {
+                  g_prismUnlockLevels = Hacks::isHackEnabled("Unlock Levels");
+                  LevelPage::onPlay(sender);
+                  g_prismUnlockLevels = false;
+              }
+              void updateDynamicPage(GJGameLevel* level) {
+                  g_prismUnlockLevels = Hacks::isHackEnabled("Unlock Levels");
+                  LevelPage::updateDynamicPage(level);
+                  g_prismUnlockLevels = false;
+              }
+          };
+          """)
+          sub("resources/hacks/bypass.json", [
+              ('"name": "Icon Bypass",',
+               '"name": "Unlock Levels",\n        "desc": "Unlocks all locked main levels without needing the user coins.",\n        "type": "bool"\n    },\n    {\n        "name": "Icon Bypass",')])
           # file::pick devuelve Result<optional<asp Path>>
           sub("src/UI/PrismUI.cpp", [("[](Result<std::optional<std::filesystem::path>> result) {", "[](auto result) {"),
                                      ("auto path = opt.value();", "std::filesystem::path path = opt.value().string();")])
