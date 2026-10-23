@@ -66,6 +66,39 @@ jobs:
                   if "gd::string" in t:
                       open(f, "w", encoding="utf-8").write(t.replace("gd::string", "std::string")); n += 1
           print("archivos con gd::string ->", n)
+          import re
+          def sub(rel, pairs, regex=False):
+              p = f"{root}/{rel}"
+              if not os.path.isfile(p):
+                  print("NO EXISTE", rel); return
+              t = open(p, encoding="utf-8").read(); o = t
+              for a, b in pairs:
+                  if regex:
+                      t, k = re.subn(a, b, t)
+                  else:
+                      k = t.count(a); t = t.replace(a, b)
+                  if not k: print("  (sin cambios en", rel, "):", a[:60])
+              if t != o:
+                  open(p, "w", encoding="utf-8").write(t); print("parcheado", rel)
+
+          # GD 2.2091 trae su propia clase Dropdown y Geode v6 trae geode::Label: se renombran las de Prism
+          for ext in ("cpp", "hpp", "h"):
+              for f in glob.glob(f"{root}/src/**/*.{ext}", recursive=True):
+                  t = open(f, encoding="utf-8").read(); o = t
+                  t = re.sub(r'(?<![\w:"/])Dropdown(?![\w."])', "PrismDropdown", t)
+                  t = re.sub(r'(?<![\w:"/])Label(?![\w."])', "PrismLabel", t)
+                  if t != o:
+                      open(f, "w", encoding="utf-8").write(t); print("renombrado en", f)
+
+          # geode::Task ya no existe (el alias FileEvent no se usa)
+          sub("src/UI/PrismUI.hpp", [("using FileEvent = Task<Result<std::filesystem::path>>;", "")])
+          # getSaveDir() devuelve asp::fs::Path
+          sub("src/main.cpp", [("auto currentSave = Mod::get()->getSaveDir();", "std::filesystem::path currentSave = Mod::get()->getSaveDir().string();"),
+                               ("bool init(GJGameLevel *p0, bool p1, bool p2) {", "bool init(GJGameLevel *p0, bool p1) {"),
+                               ("PlayLayer::init(p0,p1,p2)", "PlayLayer::init(p0,p1)")])
+          # file::pick devuelve Result<optional<asp Path>>
+          sub("src/UI/PrismUI.cpp", [("[](Result<std::optional<std::filesystem::path>> result) {", "[](auto result) {"),
+                                     ("auto path = opt.value();", "std::filesystem::path path = opt.value().string();")])
           PY
 
       - name: Install Ninja
