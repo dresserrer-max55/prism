@@ -124,8 +124,8 @@ jobs:
                   if (Hacks::isHackEnabled("No Wave Trail Behind")) {
                       float w = ccpDistance(pts[0], pts[1]);
                       float base = m_waveSize * m_pulseSize;
-                      // la pasada ancha mide el triple que la fina
-                      if (base > 0.f && w > base * 4.f) return;
+                      // la pasada ancha (3x) es la de color; la fina es la blanca/de fuego de detras: se oculta la fina
+                      if (base > 0.f && w <= base * 4.f) return;
                   }
                   if (Hacks::isHackEnabled("Custom Wave Trail Color")) {
                       auto r = Hacks::getHack("Wave Trail Red");
@@ -146,6 +146,76 @@ jobs:
           sub("resources/hacks/player.json", [
               ('        "name": "Solid Wave Trail",',
                '        "name": "Custom Wave Trail Color",\n        "desc": "Uses the color set below for the wave trail.",\n        "type": "bool",\n        "platforms": ["win","android32","android64"]\n    },\n    {\n        "name": "Wave Trail Red",\n        "desc": "Red value (0-255) of the custom wave trail color.",\n        "type": "int",\n        "min": 0,\n        "max": 255,\n        "step": 1,\n        "default": 255,\n        "platforms": ["win","android32","android64"]\n    },\n    {\n        "name": "Wave Trail Green",\n        "desc": "Green value (0-255) of the custom wave trail color.",\n        "type": "int",\n        "min": 0,\n        "max": 255,\n        "step": 1,\n        "default": 0,\n        "platforms": ["win","android32","android64"]\n    },\n    {\n        "name": "Wave Trail Blue",\n        "desc": "Blue value (0-255) of the custom wave trail color.",\n        "type": "int",\n        "min": 0,\n        "max": 255,\n        "step": 1,\n        "default": 0,\n        "platforms": ["win","android32","android64"]\n    },\n    {\n        "name": "Solid Wave Trail",')])
+          # Start Pos Switcher (pestana Creator): archivo nuevo + entrada del hack
+          with open(f"{root}/src/Hacks/StartPos.cpp", "w", encoding="utf-8") as fh:
+              fh.write("""
+          #include <Geode/Geode.hpp>
+          #include <Geode/modify/PlayLayer.hpp>
+          #include "../hacks.hpp"
+          using namespace geode::prelude;
+
+          // Start Pos Switcher: flechas dentro del nivel para cambiar entre los StartPos (y "None" = desde el principio)
+          class $modify(PrismStartPosPlayLayer, PlayLayer) {
+              struct Fields {
+                  int index = -1;
+                  CCLabelBMFont* label = nullptr;
+              };
+
+              void setupHasCompleted() {
+                  PlayLayer::setupHasCompleted();
+                  if (!Hacks::isHackEnabled("Start Pos Switcher")) return;
+                  auto arr = this->getStartPosObjectsForCurrentMode();
+                  if (!arr || arr->count() == 0) return;
+
+                  auto winSize = CCDirector::get()->getWinSize();
+                  auto menu = CCMenu::create();
+                  menu->setPosition({winSize.width / 2.f, 24.f});
+                  menu->setID("prism-startpos-switcher");
+
+                  auto leftSpr = CCSprite::createWithSpriteFrameName("GJ_arrow_01_001.png");
+                  leftSpr->setScale(.55f);
+                  auto leftBtn = CCMenuItemSpriteExtra::create(leftSpr, this, menu_selector(PrismStartPosPlayLayer::onPrevStartPos));
+                  leftBtn->setPosition({-55.f, 0.f});
+                  menu->addChild(leftBtn);
+
+                  auto rightSpr = CCSprite::createWithSpriteFrameName("GJ_arrow_01_001.png");
+                  rightSpr->setScale(.55f);
+                  rightSpr->setFlipX(true);
+                  auto rightBtn = CCMenuItemSpriteExtra::create(rightSpr, this, menu_selector(PrismStartPosPlayLayer::onNextStartPos));
+                  rightBtn->setPosition({55.f, 0.f});
+                  menu->addChild(rightBtn);
+
+                  m_fields->label = CCLabelBMFont::create("StartPos: None", "bigFont.fnt");
+                  m_fields->label->setScale(.35f);
+                  m_fields->label->setOpacity(180);
+                  menu->addChild(m_fields->label);
+
+                  this->addChild(menu, 100);
+              }
+
+              void onPrevStartPos(CCObject*) { this->switchStartPos(-1); }
+              void onNextStartPos(CCObject*) { this->switchStartPos(1); }
+
+              void switchStartPos(int dir) {
+                  auto arr = this->getStartPosObjectsForCurrentMode();
+                  if (!arr) return;
+                  int n = static_cast<int>(arr->count());
+                  if (n == 0) return;
+                  int idx = m_fields->index + dir;
+                  if (idx < -1) idx = n - 1;
+                  if (idx >= n) idx = -1;
+                  m_fields->index = idx;
+                  StartPosObject* obj = (idx >= 0) ? static_cast<StartPosObject*>(arr->objectAtIndex(idx)) : nullptr;
+                  this->switchToStartPosObject(obj);
+                  if (m_fields->label) {
+                      m_fields->label->setString(idx >= 0 ? fmt::format("StartPos: {}/{}", idx + 1, n).c_str() : "StartPos: None");
+                  }
+              }
+          };
+          """)
+          sub("resources/hacks/creator.json", [
+              ('"name": "Copy Hack",',
+               '"name": "Start Pos Switcher",\n\t    "desc": "Shows arrows in the level to switch between StartPos objects (or None to start from the beginning).",\n        "type": "bool"\n\t},\n    {\n\t    "name": "Copy Hack",')])
           # file::pick devuelve Result<optional<asp Path>>
           sub("src/UI/PrismUI.cpp", [("[](Result<std::optional<std::filesystem::path>> result) {", "[](auto result) {"),
                                      ("auto path = opt.value();", "std::filesystem::path path = opt.value().string();")])
@@ -263,23 +333,4 @@ jobs:
           fi
           mkdir -p "$GITHUB_WORKSPACE/output"
           find ./build -name "*.geode" -exec cp {} "$GITHUB_WORKSPACE/output/" \;
-          ls -la "$GITHUB_WORKSPACE/output"
-
-      - name: Upload build logs
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: prism-build-logs
-          path: |
-            build.log
-            loader.log
-          if-no-files-found: ignore
-
-      - name: Upload .geode
-        uses: actions/upload-artifact@v4
-        with:
-          name: prism-android64-2.2091
-          path: |
-            output/*.geode
-          if-no-files-found: error
-          
+      
